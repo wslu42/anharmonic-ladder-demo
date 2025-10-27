@@ -11,8 +11,7 @@
   #alphaVal { width:70px; text-align:right; font-variant-numeric: tabular-nums; }
   #excite { background:#e74c3c; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600; }
   #excite:disabled { opacity:.6; cursor:default; }
-  #wrap { padding: 0 12px 6px; }
-  footer { margin: 4px 0 6px; }
+  #wrap { position:relative; padding:0 12px 28px; }
   canvas { width:100%; max-width: calc(var(--maxw) + 260px); height:auto; display:block; margin:4px 16px 8px; }
   .legend { position:absolute; left:28px; background:rgba(255,255,255,0.95); border:1px solid #ddd; border-radius:6px; padding:8px 12px; font-size:16px; box-shadow:0 1px 2px rgba(0,0,0,.05); }
   .legend .row { display:flex; align-items:center; gap:8px; margin:4px 0; white-space:nowrap; }
@@ -60,14 +59,6 @@
 
   const canvas = document.getElementById('ladder');
   const ctx = canvas.getContext('2d');
-
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.clientWidth;
-  const cssH = canvas.clientHeight;
-  canvas.width  = Math.round(cssW * dpr);
-  canvas.height = Math.round(cssH * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // scale drawing commands
-
   const alphaSlider = document.getElementById('alpha');
   const alphaVal = document.getElementById('alphaVal');
   const exciteBtn = document.getElementById('excite');
