@@ -19,7 +19,7 @@
   .dot.blue { background:#1f77b4; }
   .dot.red  { background:#d62728; }
   .swatch { width:24px; height:3px; background:#c0c0c0; display:inline-block; }
-  footer { text-align:left; color:#111; margin: 4px 0 8px; font-size: 22px; font-weight: 600; }
+  footer { text-align:left; color:#111; margin-left:76px; margin: 4px 0 8px; font-size: 22px; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -117,7 +117,8 @@
     ctx.fillRect(0,0,canvas.width,canvas.height);
   }
 
-  function draw(alphaMHz, levelG, levelE, flashLevel = null) {
+  function draw(alphaMHz, levelG, levelE, flashLevel = null, opts = {}) {
+    const showLeakage = !!opts.leakage;
     clear();
     const { En, fnn1 } = computeLevels(alphaMHz, N_LADDER);
     const yMin = En[0] - 0.3e9;
@@ -183,16 +184,26 @@
       }
     }
 
+    // draw once, outside the loop
+    if (showLeakage) {
+      ctx.save();
+      ctx.font = "48px system-ui, sans-serif";
+      ctx.fillStyle = "red";
+      ctx.textAlign = "right";
+      ctx.fillText("LEAKAGE!", right , (yScale(En[1]) + yScale(En[2])) / 2 + 20);
+      ctx.restore();
+    }
+
     // --- Highlight computational space (|0> and |1>) ---
     ctx.save();
-    ctx.strokeStyle = "red";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([]); // solid box
+    ctx.strokeStyle = "black";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2,2]); // solid box
     const y0 = yScale(En[0]);
     const y1 = yScale(En[1]);
-    const boxTop = y1 - 0.5 * Math.abs(y1 - y0);  // slightly above |1>
-    const boxBottom = y0 + 0.5 * Math.abs(y1 - y0); // slightly below |0>
-    const margin = 20;
+    const boxTop = y1 - 0.1 * Math.abs(y1 - y0);  // slightly above |1>
+    const boxBottom = y0 + 0.1 * Math.abs(y1 - y0); // slightly below |0>
+    const margin = 5;
 
     ctx.beginPath();
     ctx.rect(left - margin, boxTop, (right - left) + 2 * margin, boxBottom - boxTop);
@@ -200,8 +211,8 @@
 
     // Label "Computational space"
     ctx.font = "20px system-ui, sans-serif";
-    ctx.fillStyle = "red";
-    ctx.fillText("Computational space", left, boxTop - 10);
+    ctx.fillStyle = "black";
+    ctx.fillText("Computational space", right-190, boxTop + 40);
     ctx.restore();
 
     }
@@ -210,7 +221,7 @@
     // External-drive sine waves: dy = 1 * rung height (request 2)
     ctx.save();
     ctx.strokeStyle = "#c0c0c0";
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 1;
     ctx.setLineDash([10, 6]);
     drawSineOnBand(left, right, yScale( (En[0]+En[1])/2 ), rungHeightPx, 3);
     drawSineOnBand(left, right, yScale( (En[1]+En[2])/2 ), rungHeightPx, 3);
@@ -309,26 +320,44 @@
     setTimeout(() => {
       const { fnn1 } = computeLevels(state.alphaMHz, N_LADDER);
       const f01 = fnn1[0], f12 = fnn1[1];
-      const P_ground  = gaussianProb(DRIVE - f01, BW);
-      const P_excited = gaussianProb(DRIVE - f12, BW) * Math.min(1, Math.SQRT2);;
-      // const P_ground  = piPulseProb(DRIVE - f01, OMEGA_R); // |0>→|1|
-      // const P_excited = piPulseProb(DRIVE - f12, OMEGA_R); // |1>→|2|
-      // const P_ground  = gaussianPulseProb(DRIVE - f01);          // |0>→|1|
-      // const P_excited = gaussianPulseProb(DRIVE - f12)* Math.min(1, Math.SQRT2);;          // |1>→|2|
 
-      const canRaiseG = state.levelG < (N_LADDER-1);
-      const canRaiseE = state.levelE < (N_LADDER-1);
+      // --- 0→1 (blue) upward, same as before ---
+      const P_ground = gaussianProb(DRIVE - f01, BW);           // |0>→|1|
+      const canRaiseG = state.levelG < (N_LADDER - 1);
       const doG = canRaiseG && (Math.random() < P_ground);
-      const doE = canRaiseE && (Math.random() < P_excited);
 
-      if (doG) state.levelG += 1;
-      if (doE) state.levelE += 1;
+      // --- 1↔{0,2} (red) can go up OR down ---
+      // selection-rule scaling: <n+1|x|n> ∝ √(n+1) ⇒ |1→2| : |1→0| ≈ √2 : 1
+      const COUP_12 = Math.SQRT2;
+      const COUP_10 = 1.0;
 
-      draw(state.alphaMHz, state.levelG, state.levelE);
+      const canRaiseE = state.levelE < (N_LADDER - 1);
+      const canLowerE = state.levelE > 0;
 
+      const wUp   = canRaiseE ? COUP_12 * gaussianProb(DRIVE - f12, BW) : 0; // |1>→|2|
+      const wDown = canLowerE ? COUP_10 * gaussianProb(DRIVE - f01, BW) : 0; // |1>→|0|
+
+      // Draw one outcome for the red dot: up, down, or none
+      let doEUp = false, doEDown = false;
+      const wTot = wUp + wDown;
+      if (wTot > 0 && Math.random() < Math.min(1, wTot)) {
+        const r = Math.random();
+        doEUp   = (r < wUp / wTot);
+        doEDown = !doEUp;
+      }
+
+      // Apply transitions
+      if (doG)   state.levelG += 1;
+      if (doEUp) state.levelE += 1;
+      if (doEDown) state.levelE -= 1;
+
+      draw(state.alphaMHz, state.levelG, state.levelE, /*flashLevel=*/null, { leakage: doEUp });
+
+      // Hold, then return to original levels
       setTimeout(() => {
-        if (doG) state.levelG -= 1;
-        if (doE) state.levelE -= 1;
+        if (doG)      state.levelG -= 1;
+        if (doEUp)    state.levelE -= 1;
+        if (doEDown)  state.levelE += 1;
         draw(state.alphaMHz, state.levelG, state.levelE);
         state.busy=false; alphaSlider.disabled=false; exciteBtn.disabled=false;
       }, 1600);
