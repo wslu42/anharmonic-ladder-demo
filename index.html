@@ -183,6 +183,27 @@
       }
     }
 
+    // --- Highlight computational space (|0> and |1>) ---
+    ctx.save();
+    ctx.strokeStyle = "red";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]); // solid box
+    const y0 = yScale(En[0]);
+    const y1 = yScale(En[1]);
+    const boxTop = y1 - 0.5 * Math.abs(y1 - y0);  // slightly above |1>
+    const boxBottom = y0 + 0.5 * Math.abs(y1 - y0); // slightly below |0>
+    const margin = 20;
+
+    ctx.beginPath();
+    ctx.rect(left - margin, boxTop, (right - left) + 2 * margin, boxBottom - boxTop);
+    ctx.stroke();
+
+    // Label "Computational space"
+    ctx.font = "20px system-ui, sans-serif";
+    ctx.fillStyle = "red";
+    ctx.fillText("Computational space", left, boxTop - 10);
+    ctx.restore();
+
     }
     ctx.restore();
 
