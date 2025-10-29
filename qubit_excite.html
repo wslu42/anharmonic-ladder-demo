@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>(An)Harmonic Ladder — α slider + Excite</title>
+<style>
+  :root { --maxw: 980px; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin:0; background:#fff; color:#111; }
+  header { padding: 12px 16px; display:flex; gap:16px; align-items:center; position:sticky; top:0; background:#fff; z-index:10; }
+  #alphaVal { width:70px; text-align:right; font-variant-numeric: tabular-nums; }
+  #excite { background:#e74c3c; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600; }
+  #excite:disabled { opacity:.6; cursor:default; }
+  #wrap { position:relative; padding:0 12px 28px; }
+  canvas { width:100%; max-width: calc(var(--maxw) + 260px); height:auto; display:block; margin:4px 16px 8px; }
+  .legend { position:absolute; left:28px; background:rgba(255,255,255,0.95); border:1px solid #ddd; border-radius:6px; padding:8px 12px; font-size:16px; box-shadow:0 1px 2px rgba(0,0,0,.05); }
+  .legend .row { display:flex; align-items:center; gap:8px; margin:4px 0; white-space:nowrap; }
+  .dot { width:14px; height:14px; border-radius:50%; display:inline-block; }
+  .dot.blue { background:#1f77b4; }
+  .dot.red  { background:#d62728; }
+  .swatch { width:24px; height:3px; background:#c0c0c0; display:inline-block; }
+  footer { text-align:left; color:#111; margin-left:76px; margin: 4px 0 8px; font-size: 22px; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <label>α (MHz)
+    <input id="alpha" type="range" min="-800" max="800" step="100" value="-200">
+  </label>
+  <output id="alphaVal">-300</output>
+  <button id="excite">Excite</button>
+</header>
+
+<div id="wrap">
+  <div class="legend" id="legend">
+    <div class="row"><span class="dot blue"></span> if Qubit in Ground state</div>
+    <div class="row"><span class="dot red"></span> if Qubit in Excited state</div>
+    <div class="row"><span class="swatch"></span>&nbsp;5&nbsp;GHz external drive</div>
+  </div>
+  <canvas id="ladder" width="1320" height="540"></canvas>
+</div>
+
+<footer id="caption">(An)Harmonic ladder, α = -300 MHz</footer>
+
+<script>
+(() => {
+  // --------- Parameters ----------
+  const F01 = 5e9;           // Hz
+  const N_LADDER = 4;        // |0>..|3>
+  const X_GROUND = 0.30;     // fraction of ladder width
+  const X_EXCITED = 0.70;
+
+  // In-browser probability (detuning around 5 GHz)
+  const DRIVE = 5e9;         // Hz
+  const BW = 22.7e6;          // Hz
+  // const OMEGA_R = 20e6
+  // const SIGMA_S = 7e-9;                         // s   (same as Python)
+  // const SIGMA_F = 1 / (2 * Math.PI * SIGMA_S);  // Hz  ≈ 22.7 MHz
+
+  const canvas = document.getElementById('ladder');
+  const ctx = canvas.getContext('2d');
+  const alphaSlider = document.getElementById('alpha');
+  const alphaVal = document.getElementById('alphaVal');
+  const exciteBtn = document.getElementById('excite');
+  const caption = document.getElementById('caption');
+  const legend = document.getElementById('legend');
+
+  const state = {
+    busy: false,
+    alphaMHz: parseFloat(alphaSlider.value),
+    levelG: 0,
+    levelE: 1,
+  };
+
+  // Layout (ladder region)
+  const left  = 60;
+  const right = 60 + 980;  // ladder width
+  const top   = 100;
+  const bottom= 520;       // leaves room for title
+  const xArrow= right + 80; // fixed X for vertical transition arrows
+
+  function computeLevels(alphaMHz, N) {
+    const alpha = alphaMHz * 1e6;
+    const w01 = 2*Math.PI*F01;
+    const K   = 2*Math.PI*alpha;
+    const En = [], fnn1 = [];
+    for (let n=0;n<N;n++) {
+      En.push((w01*n + 0.5*K*n*(n-1)) / (2*Math.PI)); // Hz
+    }
+    for (let n=0;n<N-1;n++) {
+      fnn1.push((w01 + K*n) / (2*Math.PI)); // Hz
+    }
+    return { En, fnn1 };
+  }
+
+  // function piPulseProb(detuneHz, omegaR_Hz){
+  // const Ω = 2*Math.PI*omegaR_Hz;
+  // const Δ = 2*Math.PI*detuneHz;
+  // const T = Math.PI/Ω;                  // π-pulse duration
+  // const R = Math.sqrt(Ω*Ω + Δ*Δ);
+  // const amp = (Ω*Ω)/(Ω*Ω + Δ*Δ);
+  // const p = amp * Math.sin(0.5 * R * T)**2;
+  // // numerical safety
+  // return Math.max(0, Math.min(1, p));
+  // }
+
+  // function gaussianPulseProb(detuneHz){
+  // // P ~ exp(- (Δf)^2 / (2 σ_f^2))
+  // const x = detuneHz / SIGMA_F;
+  // return Math.exp(-0.5 * x * x);
+  // }
+
+  function formatGHz(fHz) { return (fHz/1e9).toFixed(2)+"GHz"; }
+
+  function clear() {
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
+
+  function draw(alphaMHz, levelG, levelE, flashLevel = null, opts = {}) {
+    const showLeakage = !!opts.leakage;
+    clear();
+    const { En, fnn1 } = computeLevels(alphaMHz, N_LADDER);
+    const yMin = En[0] - 0.3e9;
+    const yMax = En[Math.min(N_LADDER-1,4)] + 1e9;
+    const yScale = (y) => bottom - (y - yMin) * ((bottom - top)/(yMax - yMin));
+
+    // Rung height in pixels = |E1 - E0| mapped to pixels
+    const rungHeightPx = Math.abs(yScale(En[0]) - yScale(En[1]));
+
+    // Draw rungs + |n> labels (3x bigger)
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 3;
+    ctx.fillStyle = "#000";
+    ctx.font = "36px system-ui, sans-serif"; // ~3x
+    for (let i=0;i<N_LADDER;i++) {
+      const y = yScale(En[i]);
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
+      ctx.stroke();
+      ctx.fillText("|"+i+">", right + 10, y + 12);
+    }
+
+    // Vertical dashed arrows at fixed xArrow, exactly between levels
+    ctx.save();
+    ctx.setLineDash([6,5]);
+    ctx.strokeStyle="#c0c0c0";
+    ctx.lineWidth=2;
+    ctx.fillStyle="#c0c0c0";
+    ctx.font = "24px system-ui, sans-serif"; // bigger freq labels
+    for (let i=0;i<N_LADDER-1;i++) {
+      const yA = yScale(En[i]), yB = yScale(En[i+1]);
+      // dashed line
+      ctx.beginPath();
+      ctx.moveTo(xArrow, yA);
+      ctx.lineTo(xArrow, yB);
+      ctx.stroke();
+      // arrow heads (up at lower end, down at upper end)
+      drawArrowHead(xArrow, yA,  -Math.PI);
+      drawArrowHead(xArrow, yB, 0);
+      // freq label at mid
+      // ctx.fillText("f_"+i+(i+1)+"="+formatGHz(fnn1[i]), xArrow + 18, (yA+yB)/2 + 10);
+
+      // label text
+      const label = "f_" + i + (i + 1) + "=" + formatGHz(fnn1[i]);
+      const lx = xArrow + 18;
+      const ly = (yA + yB) / 2 + 10;
+
+      ctx.fillStyle = "#c0c0c0";
+      ctx.fillText(label, lx, ly);
+
+      // if flashing, overdraw f_01 in green (can overlap)
+      if (flashLevel !== null) {
+        const shouldHighlight =
+          i === 0 ||                           // always highlight f_01
+          (alphaMHz === 0 && [1, 2].includes(i)); // also highlight f_12 and f_23 at α=0
+
+      if (shouldHighlight) {
+        ctx.save();
+        ctx.fillStyle = "green";
+        ctx.fillText(label, lx, ly);
+        ctx.restore();
+      }
+    }
+
+    // draw once, outside the loop
+    if (showLeakage) {
+      ctx.save();
+      ctx.font = "48px system-ui, sans-serif";
+      ctx.fillStyle = "red";
+      ctx.textAlign = "right";
+      ctx.fillText("LEAKAGE!", right , (yScale(En[1]) + yScale(En[2])) / 2 + 20);
+      ctx.restore();
+    }
+
+    // --- Highlight computational space (|0> and |1>) ---
+    ctx.save();
+    ctx.strokeStyle = "black";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2,2]); // solid box
+    const y0 = yScale(En[0]);
+    const y1 = yScale(En[1]);
+    const boxTop = y1 - 0.1 * Math.abs(y1 - y0);  // slightly above |1>
+    const boxBottom = y0 + 0.1 * Math.abs(y1 - y0); // slightly below |0>
+    const margin = 5;
+
+    ctx.beginPath();
+    ctx.rect(left - margin, boxTop, (right - left) + 2 * margin, boxBottom - boxTop);
+    ctx.stroke();
+
+    // Label "Computational space"
+    ctx.font = "20px system-ui, sans-serif";
+    ctx.fillStyle = "black";
+    ctx.fillText("Computational space", right-190, boxBottom - 25);
+    ctx.restore();
+
+    }
+    ctx.restore();
+
+    // External-drive sine waves: dy = 1 * rung height (request 2)
+    ctx.save();
+    ctx.strokeStyle = "#c0c0c0";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([10, 6]);
+    drawSineOnBand(left, right, yScale( (En[0]+En[1])/2 ), rungHeightPx, 3);
+    drawSineOnBand(left, right, yScale( (En[1]+En[2])/2 ), rungHeightPx, 3);
+    ctx.restore();
+
+    // Dots
+    const w = right - left;
+    const xG = left + X_GROUND*w;
+    const xE = left + X_EXCITED*w;
+
+    
+    // Optional green flash sine (on a specific rung)
+    if (flashLevel !== null) {
+      ctx.strokeStyle="green";
+      ctx.lineWidth=3;
+      drawSineOnBand(left, right, yScale((En[1]+En[0])/2), rungHeightPx, 3);
+      drawSineOnBand(left, right, yScale((En[2]+En[1])/2), rungHeightPx, 3);
+    }
+
+
+    // --- Static dashed open circles (below the actual filled dots) ---
+    ctx.save();
+    ctx.setLineDash([5, 3]);
+    ctx.lineWidth = 2;
+
+    // blue open circle baseline
+    ctx.strokeStyle = "#1f77b4";
+    drawOpenCircle(xG, yScale(En[Math.max(0, Math.min(N_LADDER - 1, 0))]), 23);
+
+    // red open circle baseline
+    ctx.strokeStyle = "#d62728";
+    drawOpenCircle(xE, yScale(En[Math.max(0, Math.min(N_LADDER - 1, 1))]), 23);
+    ctx.restore();
+
+    ctx.fillStyle="#1f77b4";
+    drawDot(xG, yScale(En[Math.max(0,Math.min(N_LADDER-1, levelG))]), 24);
+    ctx.fillStyle="#d62728";
+    drawDot(xE, yScale(En[Math.max(0,Math.min(N_LADDER-1, levelE))]), 24);
+
+    // Title centered over the ladder region (request 5)
+    caption.textContent = `(An)Harmonic ladder, α = ${alphaMHz.toFixed(0)} MHz`;
+
+    // Move legend above |3> (request 3)
+    const yTopRung = yScale(En[4]);             // y position of |3>
+    const legendBox = legend.getBoundingClientRect();
+    const canvasBox = canvas.getBoundingClientRect();
+    const desiredTopPx = Math.max(12, (yTopRung -  (legendBox.height - 20))); // above |3>
+    // convert canvas coords to page coords
+    const canvasTop = canvasBox.top + window.scrollY;
+    legend.style.top = `${canvasTop + desiredTopPx}px`;
+  }
+
+  function drawDot(x,y,r){ ctx.beginPath(); ctx.arc(x,y,r,0,2*Math.PI); ctx.fill(); }
+
+  function drawOpenCircle(x, y, r) {
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, 2 * Math.PI);
+  ctx.stroke();
+  }
+
+  function drawArrowHead(x, y, angle) {
+    const len = 12, width = 8;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(-width, len);
+    ctx.lineTo(width, len);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Draw a sine wave of amplitude "dy" (pixels) centered on yMidPx
+  function drawSineOnBand(x0, x1, yMidPx, dy, cycles) {
+    const N = 220;
+    ctx.beginPath();
+    for (let i=0;i<=N;i++) {
+      const t = i/N;
+      const x = x0 + t*(x1-x0);
+      const y = yMidPx + dy * Math.sin(2*Math.PI*cycles*t) * 0.5; // 0.5 to keep fully visible
+      if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+  }
+
+  function gaussianProb(detuneHz, bwHz){ const x=detuneHz/bwHz; return Math.exp(-0.5*x*x); }
+
+  function exciteOnce(){
+    if (state.busy) return;
+    state.busy = true; alphaSlider.disabled=true; exciteBtn.disabled=true;
+
+    // Green flash at |2> (brief)
+    draw(state.alphaMHz, state.levelG, state.levelE, 2);
+    setTimeout(() => {
+      const { fnn1 } = computeLevels(state.alphaMHz, N_LADDER);
+      const f01 = fnn1[0], f12 = fnn1[1];
+
+      // --- 0→1 (blue) upward, same as before ---
+      const P_ground = gaussianProb(DRIVE - f01, BW);           // |0>→|1|
+      const canRaiseG = state.levelG < (N_LADDER - 1);
+      const doG = canRaiseG && (Math.random() < P_ground);
+
+      // --- 1↔{0,2} (red) can go up OR down ---
+      // selection-rule scaling: <n+1|x|n> ∝ √(n+1) ⇒ |1→2| : |1→0| ≈ √2 : 1
+      const COUP_12 = Math.SQRT2;
+      const COUP_10 = 1.0;
+
+      const canRaiseE = state.levelE < (N_LADDER - 1);
+      const canLowerE = state.levelE > 0;
+
+      const wUp   = canRaiseE ? COUP_12 * gaussianProb(DRIVE - f12, BW) : 0; // |1>→|2|
+      const wDown = canLowerE ? COUP_10 * gaussianProb(DRIVE - f01, BW) : 0; // |1>→|0|
+
+      // Draw one outcome for the red dot: up, down, or none
+      let doEUp = false, doEDown = false;
+      const wTot = wUp + wDown;
+      if (wTot > 0 && Math.random() < Math.min(1, wTot)) {
+        const r = Math.random();
+        doEUp   = (r < wUp / wTot);
+        doEDown = !doEUp;
+      }
+
+      // Apply transitions
+      if (doG)   state.levelG += 1;
+      if (doEUp) state.levelE += 1;
+      if (doEDown) state.levelE -= 1;
+
+      draw(state.alphaMHz, state.levelG, state.levelE, /*flashLevel=*/null, { leakage: doEUp });
+
+      // Hold, then return to original levels
+      setTimeout(() => {
+        if (doG)      state.levelG -= 1;
+        if (doEUp)    state.levelE -= 1;
+        if (doEDown)  state.levelE += 1;
+        draw(state.alphaMHz, state.levelG, state.levelE);
+        state.busy=false; alphaSlider.disabled=false; exciteBtn.disabled=false;
+      }, 1600);
+    }, 800);
+  }
+
+  // UI wiring
+  alphaSlider.addEventListener('input', () => {
+    state.alphaMHz = parseFloat(alphaSlider.value);
+    alphaVal.textContent = alphaSlider.value;
+    if (!state.busy) draw(state.alphaMHz, state.levelG, state.levelE);
+  });
+  exciteBtn.addEventListener('click', exciteOnce);
+
+  // Initial render + initial legend placement
+  alphaVal.textContent = alphaSlider.value;
+  draw(state.alphaMHz, state.levelG, state.levelE);
+  window.addEventListener('resize', () => draw(state.alphaMHz, state.levelG, state.levelE));
+})();
+</script>
+
+<footer style="
+  text-align:center;
+  font-size:14px;
+  color:#555;
+  margin:24px 0 10px;
+  line-height:1.4;
+">
+  © 2025 Wen-Sen Lu. Licensed under 
+  <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/"
+     target="_blank"
+     rel="noopener noreferrer"
+     style="color:#007acc; text-decoration:none; font-weight:500;">
+     CC BY-NC-SA 4.0
+  </a>.<br>
+  Anharmonic Oscillator Demo” visualization concept by Wen-Sen Lu — for educational and research use only.
+</footer>
+
+</body>
+</html>
